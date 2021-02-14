@@ -7,3 +7,5 @@ import pandas
 print('hello world')
 
 print("good Bye")
+
+import igraph
