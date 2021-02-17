@@ -29,4 +29,15 @@ st.plotly_chart(ff2)
 
 with st.spinner('Wait for it...'):
     time.sleep(3)
+
+
+#help(st.button)
+
+if st.button('Say hello'):
+    st.write('Why hello there')
+else:
+    st.write('Goodbye')
+
+
+
 st.success('Done!')
