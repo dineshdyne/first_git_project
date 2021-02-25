@@ -2,6 +2,7 @@ import os
 import re
 import time
 from collections import *
+from datetime import datetime, time
 from functools import *
 from glob import glob
 from itertools import *
@@ -25,20 +26,25 @@ import streamlit as st
 import streamlit.components.v1 as components
 import sweetviz as sv
 from autoviz.AutoViz_Class import AutoViz_Class
+from catboost import CatBoostClassifier, CatBoostRegressor
 from gensim.models import CoherenceModel
 from gensim.utils import simple_preprocess
 from IPython import get_ipython
+from lightgbm import LGBMClassifier, LGBMRegressor
 from more_itertools import *
 from nltk.corpus import IndianCorpusReader, stopwords, wordnet
 from nltk.sentiment import SentimentAnalyzer, SentimentIntensityAnalyzer
-# from nltk import *
 from nltk.stem import WordNetLemmatizer
 from pandas_profiling import ProfileReport
+from pandas_summary import DataFrameSummary
 from PIL import Image
+from sklearn.ensemble import (AdaBoostClassifier, AdaBoostRegressor,
+                              RandomForestClassifier, RandomForestRegressor)
 from streamlit_pandas_profiling import st_profile_report
 from textblob import TextBlob
 from transformers import pipeline
 from wordcloud import STOPWORDS, WordCloud
+from xgboost import XGBClassifier, XGBRegressor
 
 #import SessionState
 # list(glob(os.getcwd()+"/**"))
@@ -99,7 +105,7 @@ def run_eda(df, chosen_val='Pandas Profiling'):
         st.write("opening new tab")
         rep = sv.analyze(df.select_dtypes(exclude='datetime64[ns]'))
         rep.show_html()
-    else:
+    elif chosen_val == 'Autoviz':
         #AV = AutoViz_Class()
         chart_format = 'jpg'
 
@@ -121,6 +127,8 @@ def run_eda(df, chosen_val='Pandas Profiling'):
 
             image = Image.open(i)
             st.image(image)
+    # else:
+    #     st.table(DataFrameSummary(df))
 
 
 def run_zsc(trimmed_df, text_col, labels):
@@ -128,8 +136,8 @@ def run_zsc(trimmed_df, text_col, labels):
     #     zero_shot_classifier(list(collapse(df[text_col].values)),
     #                          labels,
     #                          multi_class=True))
-    trimmed_df[text_col] = trimmed_df[text_col].apply(
-        lambda x: zero_shot_classifier(x, labels, multi_class=True).values())
+    trimmed_df[text_col + '_zsc'] = trimmed_df[text_col].apply(lambda x: list(
+        zero_shot_classifier(x, labels, multi_class=True).values())[-2:])
     return trimmed_df
 
 
@@ -143,7 +151,8 @@ st.set_page_config(  # Alternate names: setup_page, page, layout
 )
 
 option_dict = {
-    'Exploratory Data Analysis': ['Pandas Profiling', 'Autoviz', 'Sweetviz'],
+    'Exploratory Data Analysis':
+    ['Pandas Profiling', 'Autoviz', 'Sweetviz', 'Summary Table'],
     'NLP': ['Sentiment Analysis', 'LDA', 'NER'],
     'Zero-Shot Topic Classification': ['sentiment', 'labels', 'both'],
     'Time Series': ['model1', 'model2'],
@@ -157,6 +166,43 @@ option_dict = {
         'LightGBM', 'AdaBoost', 'CatBoost', 'XGBoost', 'TPOT', 'SVM'
     ],
     'Image Recognition': ['Object Detection', 'Facial expression', 'OCR']
+}
+
+# lgbm_dict={
+#  'learning_rate': 0.1,
+#  'max_depth': -1,
+#  'n_estimators': 100,
+#  'n_jobs': -1,
+#  'num_leaves': 31,
+#  'reg_alpha': 0.0,
+#  'reg_lambda': 0.0,}
+#  xgb_dict={}
+
+model_param_map = {
+    'CatBoost':
+    ['iterations', 'max_depth', 'num_leaves', 'learning_rate', 'reg_lambda'],
+    'LightGBM': [
+        'n_estimators', 'max_depth', 'n_jobs', 'learning_rate', 'num_leaves',
+        'reg_alpha', 'reg_lambda'
+    ],
+    'XGBoost': [
+        'n_estimators', 'max_depth', 'n_jobs', 'learning_rate', 'reg_alpha',
+        'reg_lambda'
+    ],
+    'RandomForest': ['n_estimators', 'max_depth', 'n_jobs', 'max_features']
+}
+
+model_map_class = {
+    'CatBoost': CatBoostClassifier,
+    'LightGBM': LGBMClassifier,
+    'XGBoost': XGBClassifier,
+    'RandomForest': RandomForestClassifier
+}
+model_map_reg = {
+    'CatBoost': CatBoostRegressor,
+    'LightGBM': LGBMRegressor,
+    'XGBoost': XGBRegressor,
+    'RandomForest': RandomForestRegressor
 }
 
 st.sidebar.title('ML-Hub')
@@ -210,8 +256,8 @@ if uploaded_file is not None:
     elif option in ['Classification Models', 'Regression Models']:
         option2 = st.sidebar.multiselect(f'Select {option}',
                                          option_dict.get(option))
-        # st.sidebar.info(
-        #    "if one model is chosen, dummy model is used for comparision")
+        st.sidebar.info(
+            "If only one model is chosen, dummy model is used for comparision")
         split_type = st.sidebar.radio('split type', ['Random', 'Ordered'])
         if split_type == 'Ordered':
             order_cols = st.sidebar.multiselect('order by columns',
@@ -226,12 +272,35 @@ if uploaded_file is not None:
         }
         st.sidebar.write(split_dict_vals)
 
-        parameters = dict(zip(option2, [10] * len(option2)))
-        for k, v in parameters.items():
-            parameters[k] = st.sidebar.number_input(
-                f"number of iterations - {k} ", 10, 1000, v, step=10, key=k)
+        #parameters = dict(zip(option2, [10] * len(option2)))
+        # for k, v in parameters.items():
+        #     parameters[k] = st.sidebar.number_input(
+        #         f" {k} -{v}", 10, 1000, v, step=10, key=k)
 
-        st.write(parameters)
+        parameters = [(i, model_param_map[i]) for i in option2]
+        models = []
+        #st.write(parameters)
+        for k, v in parameters:
+            st.sidebar.subheader(k)
+            tmp = dict(zip(v, [0] * len(v)))
+            for j in v:
+                tmp[j] = st.sidebar.number_input(f" {k} -{j}",
+                                                 0.0,
+                                                 1000.0,
+                                                 value=1.0,
+                                                 step=0.01,
+                                                 key=f'{k}-{j}')
+            if option == 'Classification Models':
+                models.append(model_map_class[k](**tmp))
+            if option == 'Regression Models':
+                models.append(model_map_reg[k](**tmp))
+
+        st.write(models)
+
+        try:
+            st.write(models[0].get_params())
+        except:
+            pass
 
     # elif option == 'Classification Models':
     #     option2 = st.sidebar.multiselect('Select Classification models',
@@ -279,6 +348,8 @@ if uploaded_file is not None:
 
     if pressed:
         st.write(option)
+
+        start = datetime.now()
         with st.spinner('Running the {} '.format(option)):
             # run pandas profiler
 
@@ -321,7 +392,7 @@ if uploaded_file is not None:
                     st.write(i)
             else:
                 pass
-
+        st.write(datetime.now() - start)
 #help(st.number_input)
 
 st.success("Done")
