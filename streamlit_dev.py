@@ -7,22 +7,38 @@ from glob import glob
 from itertools import *
 from operator import *
 
+import gensim
+import gensim.corpora as corpora
 import igraph
+import inltk
 import matplotlib.pyplot as plt
 import networkx as nx
+import nltk
 import numpy as np
 import pandas as pd
 import plotly.express as px
+import pyLDAvis
+import pyLDAvis.gensim
 import seaborn as sns
+import spacy
 import streamlit as st
 import streamlit.components.v1 as components
 import sweetviz as sv
 from autoviz.AutoViz_Class import AutoViz_Class
+from gensim.models import CoherenceModel
+from gensim.utils import simple_preprocess
 from IPython import get_ipython
 from more_itertools import *
+from nltk.corpus import IndianCorpusReader, stopwords, wordnet
+from nltk.sentiment import SentimentAnalyzer, SentimentIntensityAnalyzer
+# from nltk import *
+from nltk.stem import WordNetLemmatizer
 from pandas_profiling import ProfileReport
 from PIL import Image
 from streamlit_pandas_profiling import st_profile_report
+from textblob import TextBlob
+from transformers import pipeline
+from wordcloud import STOPWORDS, WordCloud
 
 #import SessionState
 # list(glob(os.getcwd()+"/**"))
@@ -107,6 +123,16 @@ def run_eda(df, chosen_val='Pandas Profiling'):
             st.image(image)
 
 
+def run_zsc(trimmed_df, text_col, labels):
+    # return pd.DataFrame(
+    #     zero_shot_classifier(list(collapse(df[text_col].values)),
+    #                          labels,
+    #                          multi_class=True))
+    trimmed_df[text_col] = trimmed_df[text_col].apply(
+        lambda x: zero_shot_classifier(x, labels, multi_class=True).values())
+    return trimmed_df
+
+
 st.set_page_config(  # Alternate names: setup_page, page, layout
     # Can be "centered" or "wide". In the future also "dashboard", etc.
     layout="wide",
@@ -145,7 +171,7 @@ option = st.sidebar.selectbox('Select a task', list(option_dict.keys()))
 
 uploaded_file = st.file_uploader("Upload a dataset")
 
-# st.write(type(uploaded_file))
+#st.write(uploaded_file)
 #help(st.number_input)
 if uploaded_file is not None:
     df = pd.read_csv(uploaded_file)
@@ -168,31 +194,75 @@ if uploaded_file is not None:
         option2 = st.sidebar.radio('Select a task ', option_dict.get(option))
         dep_var = st.sidebar.selectbox('select dependent variable',
                                        [''] + list(df.columns))
+
     elif option == 'Zero-Shot Topic Classification':
 
         labels = st.text_input('input labels', 'positive,negative')
         labels = labels.split(",")
         text_col = st.selectbox('select text column', list(df.columns))
+        num_comments = st.slider('number of samples', 1, 1000, step=10)
+        st.write(text_col)
     elif option == 'Time Series':
         option2 = st.sidebar.multiselect('Select forecasting models',
                                          option_dict.get(option))
         ts_cols = st.multiselect('select date,value columns', list(df.columns))
-        #st.write(ts_cols)
-    elif option == 'Classification Models':
-        option2 = st.sidebar.multiselect('Select Classification models',
+
+    elif option in ['Classification Models', 'Regression Models']:
+        option2 = st.sidebar.multiselect(f'Select {option}',
                                          option_dict.get(option))
         # st.sidebar.info(
         #    "if one model is chosen, dummy model is used for comparision")
-    elif option == 'Regression Models':
-        option2 = st.sidebar.multiselect('Select Regression models',
-                                         option_dict.get(option))
-        # st.sidebar.info(
-        #    "if one model is chosen, dummy model is used for comparision")
-        parameters = dict(zip(option2, [None] * len(option2)))
+        split_type = st.sidebar.radio('split type', ['Random', 'Ordered'])
+        if split_type == 'Ordered':
+            order_cols = st.sidebar.multiselect('order by columns',
+                                                list(df.columns))
+
+        splits_val = st.sidebar.slider("train val test split", 0, 100,
+                                       (60, 80), 5)
+        split_dict_vals = {
+            'train': splits_val[0],
+            'val': splits_val[1] - splits_val[0],
+            'test': 100 - splits_val[1]
+        }
+        st.sidebar.write(split_dict_vals)
+
+        parameters = dict(zip(option2, [10] * len(option2)))
         for k, v in parameters.items():
             parameters[k] = st.sidebar.number_input(
-                f"number of iterations -{k} ", 10, 1000, step=10, key=k)
+                f"number of iterations - {k} ", 10, 1000, v, step=10, key=k)
+
         st.write(parameters)
+
+    # elif option == 'Classification Models':
+    #     option2 = st.sidebar.multiselect('Select Classification models',
+    #                                      option_dict.get(option))
+    #     # st.sidebar.info(
+    #     #    "if one model is chosen, dummy model is used for comparision")
+    #     parameters = dict(zip(option2, [None] * len(option2)))
+    #     for k, v in parameters.items():
+    #         parameters[k] = st.sidebar.number_input(
+    #             f"number of iterations -{k} ", 10, 1000, step=10, key=k)
+    #
+    #     splits_val = st.sidebar.slider("train val test split", 0, 100,
+    #                                    (60, 80), 5)
+    #     split_dict_vals = {
+    #         'train': splits_val[0],
+    #         'val': splits_val[1] - splits_val[0],
+    #         'test': 100 - splits_val[1]
+    #     }
+    #     st.sidebar.write(split_dict_vals)
+    #     st.write(parameters)
+    #
+    # elif option == 'Regression Models':
+    #     option2 = st.sidebar.multiselect('Select Regression models',
+    #                                      option_dict.get(option))
+    #     # st.sidebar.info(
+    #     #    "if one model is chosen, dummy model is used for comparision")
+    #     parameters = dict(zip(option2, [None] * len(option2)))
+    #     for k, v in parameters.items():
+    #         parameters[k] = st.sidebar.number_input(
+    #             f"number of iterations -{k} ", 10, 1000, step=10, key=k)
+    #     st.write(parameters)
     elif option == 'Network Graph':
         option2 = st.sidebar.selectbox('Select Network Type',
                                        option_dict.get(option))
@@ -227,13 +297,22 @@ if uploaded_file is not None:
                 # for k,v in label_dict.items():
                 #     label=st.text_input(k,v)
                 #     st.write(label)
-                st.write(labels)
-                run_zsc()
 
+                trimmed_df = df.sample(n=num_comments).dropna(
+                    subset=[text_col])
+
+                zero_shot_classifier = pipeline(
+                    "zero-shot-classification",
+                    tokenizer='/Users/apple/Desktop/Projects/Models/model_bart'
+                )
+                st.write(labels)
+                zsc_df = run_zsc(trimmed_df, text_col, labels)
+                st.write(zsc_df.head())
                 # pressed_3=st.button('Submit',key='3')
                 # if pressed_3:
                 #     result =label_vals.title()
                 #     st.success(result)
+                zsc_df.to_csv('/Users/apple/Desktop/zsc_df.csv')
                 st.write('noted')
             elif option == 'Classification Models':
                 st.markdown("### Chosen models")
@@ -242,5 +321,7 @@ if uploaded_file is not None:
                     st.write(i)
             else:
                 pass
+
+#help(st.number_input)
 
 st.success("Done")
