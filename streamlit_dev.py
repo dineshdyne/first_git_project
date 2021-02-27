@@ -1,3 +1,4 @@
+import base64
 import os
 import re
 import time
@@ -8,6 +9,7 @@ from glob import glob
 from itertools import *
 from operator import *
 
+import dask.dataframe as dd
 import gensim
 import gensim.corpora as corpora
 import igraph
@@ -25,6 +27,7 @@ import spacy
 import streamlit as st
 import streamlit.components.v1 as components
 import sweetviz as sv
+import vaex
 from autoviz.AutoViz_Class import AutoViz_Class
 from catboost import CatBoostClassifier, CatBoostRegressor
 from gensim.models import CoherenceModel
@@ -40,6 +43,11 @@ from pandas_summary import DataFrameSummary
 from PIL import Image
 from sklearn.ensemble import (AdaBoostClassifier, AdaBoostRegressor,
                               RandomForestClassifier, RandomForestRegressor)
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import *
+from sklearn.preprocessing import (LabelEncoder, MinMaxScaler, Normalizer,
+                                   OneHotEncoder, PowerTransformer,
+                                   QuantileTransformer, StandardScaler)
 from streamlit_pandas_profiling import st_profile_report
 from textblob import TextBlob
 from transformers import pipeline
@@ -56,11 +64,20 @@ def val_count(tmp: pd.Series):
         return [None] * 4
     a = (l.cumsum().round(3) - 80).abs().argmin()
 
-    return len(l), list(l.nlargest(3).round(2).items()), (
-        a + 1, l.cumsum().round(2).iloc[a]), l.cumsum().median()
+    return len(l), len(l) * 100 / tmp.count(), list(
+        l.nlargest(3).round(2).items()), (
+            a + 1, l.cumsum().round(2).iloc[a]), l.cumsum().median()
+
+
+def set_num_type(i):
+    if int(i) == i:
+        return int(i)
+    else:
+        return i
 
 
 def missing_zero_values_2(df, corr=True):
+
     num_types = [
         'float16', 'float32', 'float64', 'int8', 'int16', 'int32', 'int64'
     ]
@@ -68,17 +85,20 @@ def missing_zero_values_2(df, corr=True):
     df_len = len(df)
     miss_zero_df = pd.DataFrame([
         (j, k, (df[i] == 0).sum() if j in num_types else 0,
-         df[i].dropna().min(), df[i].dropna().max(), list(val_count(df[i])))
+         df[i].dropna().min(), df[i].dropna().max(), df[i].count(),
+         list(val_count(df[i])))
         for i, j, k in zip(df.columns, df.dtypes.astype('str'),
                            df.isna().sum())
     ])
 
     miss_zero_df.columns = [
-        'col_dtype', 'null_cnt', 'zero_cnt', 'min_val', 'max_val', 'vals'
+        'col_dtype', 'null_cnt', 'zero_cnt', 'min_val', 'max_val', 'count',
+        'vals'
     ]
     miss_zero_df.index = df.columns
     miss_zero_df[[
-        'nunique', 'top_3_largest', 'top_80_perc_approx', 'top_50_perc_share'
+        'nunique', 'uniq_perc', 'top_3_largest', 'top_80_perc_approx',
+        'top_50_perc_share'
     ]] = pd.DataFrame(miss_zero_df['vals'].to_list(), index=miss_zero_df.index)
     miss_zero_df.drop('vals', axis=1, inplace=True)
     miss_zero_df[' % null'] = miss_zero_df['null_cnt'] * 100 / df_len
@@ -93,37 +113,79 @@ def missing_zero_values_2(df, corr=True):
     return miss_zero_df
 
 
+def get_table_download_link(df):
+    """Generates a link allowing the data in a given panda dataframe to be downloaded
+    in:  dataframe
+    out: href string
+    """
+
+    csv = df.to_csv(index=False)
+    b64 = base64.b64encode(csv.encode()).decode(
+    )  # some strings <-> bytes conversions necessary here
+    href = f'#### <a href="data:file/csv;base64,{b64}">Download csv file</a>'
+    return href
+
+
+def data_distribution(p, split_dict, sort_dict={}):
+    df = p.copy()
+    if len(sort_dict) == 0:
+        df = df.sample(frac=1)
+    else:
+        df = df.sort_values(list(sort_dict.keys()),
+                            ascending=list(sort_dict.values()))
+    # df_len = len(df)
+    # df['group_dist'] = 'train'
+    # df.iloc[-int(df_len * control_perc / 100):,
+    #         df.columns.get_loc('group_dist')] = 'control'
+    # split_dict.pop('control')
+    # df['TG_offer'] = None
+    l1 = list(
+        map(lambda x: int(x * len(df) / 100), accumulate(split_dict.values())))
+    k = np.split(df, l1[:-1])
+    # print(df_len, [len(i) for i in k], len(df[df.TG_group == 'control']))
+    # for i, j in enumerate(split_dict.keys()):
+    #     k[i]['group_dist'] = j
+    return k
+
+
 cwd = os.getcwd()
 AV = AutoViz_Class()
 
 
-def run_eda(df, chosen_val='Pandas Profiling'):
+def run_eda(df, dep_var="", chosen_val='Pandas Profiling'):
     if chosen_val == 'Pandas Profiling':
         pr = ProfileReport(df, explorative=True)
         st_profile_report(pr)
     elif chosen_val == 'Sweetviz':
         st.write("opening new tab")
-        rep = sv.analyze(df.select_dtypes(exclude='datetime64[ns]'))
+        rep = sv.analyze(df.select_dtypes(exclude='datetime64[ns]'),
+                         target_feat=dep_var)
         rep.show_html()
     elif chosen_val == 'Autoviz':
         #AV = AutoViz_Class()
         chart_format = 'jpg'
 
-        dft = AV.AutoViz(filename="",
-                         sep=',',
-                         depVar='',
-                         dfte=df,
-                         header=0,
-                         verbose=2,
-                         lowess=False,
-                         chart_format=chart_format,
-                         max_rows_analyzed=150000,
-                         max_cols_analyzed=30)
+        dft = AV.AutoViz(
+            filename="",
+            sep=',',
+            depVar=dep_var,
+            dfte=df,
+            header=0,
+            verbose=2,
+            lowess=False,
+            chart_format=chart_format,
+            max_rows_analyzed=len(df),  #150000,
+            max_cols_analyzed=df.shape[1])  #30
         st.write(dft.head())
         st.write('Autoviz')
         # st.write(os.getcwd()+f"/AutoViz_Plots/empty_string/*.{chart_format}")
+        if dep_var != '':
+            stored_folder = dep_var
+        else:
+            stored_folder = 'empty_string'
         for i in list(
-                glob(cwd + f"/AutoViz_Plots/empty_string/*.{chart_format}")):
+                glob(cwd +
+                     f"/AutoViz_Plots/{stored_folder}/*.{chart_format}")):
 
             image = Image.open(i)
             st.image(image)
@@ -153,10 +215,11 @@ st.set_page_config(  # Alternate names: setup_page, page, layout
 option_dict = {
     'Exploratory Data Analysis':
     ['Pandas Profiling', 'Autoviz', 'Sweetviz', 'Summary Table'],
-    'NLP': ['Sentiment Analysis', 'LDA', 'NER'],
+    'NLP': ['Sentiment Analysis', 'LDA', 'QDA', 'NER'],
     'Zero-Shot Topic Classification': ['sentiment', 'labels', 'both'],
     'Time Series': ['model1', 'model2'],
     'Network Graph': ['Undirected', 'Directed', 'Bidirected'],
+    'Clustering': ['KMeans', 'KModes', 'DBSCAN', 'AgglomerativeClustering'],
     'Classification Models': [
         'Logistic', 'Naive_Bayes', 'KNN', 'DecisionTree', 'RandomForest',
         'LightGBM', 'AdaBoost', 'CatBoost', 'XGBoost', 'TPOT', 'SVM'
@@ -189,14 +252,16 @@ model_param_map = {
         'n_estimators', 'max_depth', 'n_jobs', 'learning_rate', 'reg_alpha',
         'reg_lambda'
     ],
-    'RandomForest': ['n_estimators', 'max_depth', 'n_jobs', 'max_features']
+    'RandomForest': ['n_estimators', 'max_depth', 'n_jobs', 'max_features'],
+    'Logistic': ['max_iter', 'n_jobs', 'C']
 }
 
 model_map_class = {
     'CatBoost': CatBoostClassifier,
     'LightGBM': LGBMClassifier,
     'XGBoost': XGBClassifier,
-    'RandomForest': RandomForestClassifier
+    'RandomForest': RandomForestClassifier,
+    'Logistic': LogisticRegression
 }
 model_map_reg = {
     'CatBoost': CatBoostRegressor,
@@ -217,20 +282,32 @@ option = st.sidebar.selectbox('Select a task', list(option_dict.keys()))
 
 uploaded_file = st.file_uploader("Upload a dataset")
 
+#beta columns
+# num = st.selectbox('select num', list(range(10)))
+# a = st.beta_columns(num)
+# p = [0] * len(a)
+# for i in range(len(a)):
+#     p[i] = a[i].number_input(f"enter value {str(i)}", 0, 100, value=50, step=1)
+
 #st.write(uploaded_file)
 #help(st.number_input)
 if uploaded_file is not None:
     df = pd.read_csv(uploaded_file)
+    #df = vaex.read_csv(uploaded_file)
     st.success('Successfully loaded the file {}'.format(uploaded_file.name))
     st.subheader("Sample Data")
     st.write(df.sample(5))
+    st.write(df.shape)
     # df_dtypes = pd.DataFrame(df.dtypes).reset_index()
     # df_dtypes.columns = ['column', 'dtype']
     # st.subheader("Data Types")
     # st.write(df_dtypes)
     st.subheader("Initial Analysis")
-    st.write(missing_zero_values_2((df)))
 
+    if st.checkbox('Run Initial Analysis'):
+        init_df = missing_zero_values_2(df)
+        st.dataframe(init_df)
+        st.markdown(get_table_download_link(init_df), unsafe_allow_html=True)
     drop_cols = st.multiselect("Drop Columns", list(df.columns))
     # st.write(type(drop_cols))
     # st.write(drop_cols)
@@ -239,7 +316,7 @@ if uploaded_file is not None:
     if option == 'Exploratory Data Analysis':
         option2 = st.sidebar.radio('Select a task ', option_dict.get(option))
         dep_var = st.sidebar.selectbox('select dependent variable',
-                                       [''] + list(df.columns))
+                                       [""] + list(df.columns))
 
     elif option == 'Zero-Shot Topic Classification':
 
@@ -258,10 +335,19 @@ if uploaded_file is not None:
                                          option_dict.get(option))
         st.sidebar.info(
             "If only one model is chosen, dummy model is used for comparision")
+        y_label = st.sidebar.selectbox("Select Dependant Variable", df.columns)
         split_type = st.sidebar.radio('split type', ['Random', 'Ordered'])
+        order_map = dict({})
         if split_type == 'Ordered':
             order_cols = st.sidebar.multiselect('order by columns',
                                                 list(df.columns))
+            order_map = dict(
+                zip(order_cols, [
+                    st.sidebar.selectbox(f'{i} - ascending', [True, False],
+                                         key=i) for i in order_cols
+                ]))
+
+            st.write(order_map)
 
         splits_val = st.sidebar.slider("train val test split", 0, 100,
                                        (60, 80), 5)
@@ -282,14 +368,28 @@ if uploaded_file is not None:
         #st.write(parameters)
         for k, v in parameters:
             st.sidebar.subheader(k)
+            st.subheader(k)
             tmp = dict(zip(v, [0] * len(v)))
-            for j in v:
-                tmp[j] = st.sidebar.number_input(f" {k} -{j}",
-                                                 0.0,
-                                                 1000.0,
-                                                 value=1.0,
-                                                 step=0.01,
-                                                 key=f'{k}-{j}')
+            #
+            # for j in v:
+            #     tmp[j] = set_num_type(
+            #         st.sidebar.number_input(f" {k} -{j}",
+            #                                 0.0,
+            #                                 1000.0,
+            #                                 value=1.0,
+            #                                 step=0.01,
+            #                                 key=f'{k}-{j}'))
+
+            mod_a = st.beta_columns(len(v))
+            for j in range(len(v)):
+                tmp[v[j]] = set_num_type(mod_a[j].number_input(
+                    f" {k} -{v[j]}",
+                    0.0,
+                    1000.0,
+                    value=1.0,
+                    step=0.01,
+                    key=f'{k}-{v[j]}'))
+
             if option == 'Classification Models':
                 models.append(model_map_class[k](**tmp))
             if option == 'Regression Models':
@@ -297,10 +397,10 @@ if uploaded_file is not None:
 
         st.write(models)
 
-        try:
-            st.write(models[0].get_params())
-        except:
-            pass
+        # try:
+        #     st.write(models[0].get_params())
+        # except:
+        #     pass
 
     # elif option == 'Classification Models':
     #     option2 = st.sidebar.multiselect('Select Classification models',
@@ -351,15 +451,10 @@ if uploaded_file is not None:
 
         start = datetime.now()
         with st.spinner('Running the {} '.format(option)):
-            # run pandas profiler
-
-            # st.dataframe(missing_zero_values_2(df))
-
-            #st.write("profile report ")
 
             if option == 'Exploratory Data Analysis':
 
-                run_eda(df, option2)
+                run_eda(df, dep_var, option2)
 
                 st.write(dep_var)
             elif option == 'Zero-Shot Topic Classification':
@@ -385,14 +480,64 @@ if uploaded_file is not None:
                 #     st.success(result)
                 zsc_df.to_csv('/Users/apple/Desktop/zsc_df.csv')
                 st.write('noted')
+
             elif option == 'Classification Models':
                 st.markdown("### Chosen models")
-                for i in option2:
+                obj_cols = df.select_dtypes('object').columns
+                model_data = pd.get_dummies(
+                    df,
+                    columns=[i for i in obj_cols if i != y_label]).fillna(0)
+                train, val, test = data_distribution(model_data,
+                                                     split_dict_vals,
+                                                     order_map)
+                trained_models = []
+                for i in models:
+                    #st.subheader(i)
+                    st.dataframe(train.head())
+                    le = LabelEncoder()
+                    st.write(train.dtypes.value_counts())
+                    i.fit(train.drop(y_label, axis=1),
+                          le.fit_transform(train[y_label].astype(str)))
+                    st.write('val')
+                    st.write(
+                        i.score(val.drop(y_label, axis=1),
+                                le.transform(val[y_label].astype(str))))
+                    st.write('test')
+                    st.write(
+                        i.score(test.drop(y_label, axis=1),
+                                le.transform(test[y_label].astype(str))))
 
-                    st.write(i)
+                    trained_models.append(i)
+            elif option == 'Regression Models':
+                st.markdown("### Chosen models")
+                obj_cols = df.select_dtypes('object').columns
+                model_data = pd.get_dummies(
+                    df,
+                    columns=[i for i in obj_cols if i != y_label]).fillna(0)
+                train, val, test = data_distribution(model_data,
+                                                     split_dict_vals,
+                                                     order_map)
+                trained_models = []
+                for i in models:
+                    #st.subheader(i)
+                    st.dataframe(train.head())
+                    st.write(train.dtypes.value_counts())
+                    i.fit(train.drop(y_label, axis=1), train[y_label])
+                    st.write('val')
+                    st.write(i.score(val.drop(y_label, axis=1), val[y_label]))
+                    st.write('test')
+                    st.write(i.score(test.drop(y_label, axis=1),
+                                     test[y_label]))
+
+                    trained_models.append(i)
+
             else:
                 pass
         st.write(datetime.now() - start)
+
 #help(st.number_input)
+
+# a=np.random.choice(range(10),size=100)
+# np.split(a,[10,30,40])
 
 st.success("Done")
