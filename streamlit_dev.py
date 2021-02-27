@@ -1,4 +1,5 @@
 import base64
+import gc
 import os
 import re
 import time
@@ -30,11 +31,13 @@ import sweetviz as sv
 import vaex
 from autoviz.AutoViz_Class import AutoViz_Class
 from catboost import CatBoostClassifier, CatBoostRegressor
+from dataprep.eda import plot, plot_missing
 from gensim.models import CoherenceModel
 from gensim.utils import simple_preprocess
 from IPython import get_ipython
 from lightgbm import LGBMClassifier, LGBMRegressor
 from more_itertools import *
+from multipledispatch import dispatch
 from nltk.corpus import IndianCorpusReader, stopwords, wordnet
 from nltk.sentiment import SentimentAnalyzer, SentimentIntensityAnalyzer
 from nltk.stem import WordNetLemmatizer
@@ -56,6 +59,8 @@ from xgboost import XGBClassifier, XGBRegressor
 
 #import SessionState
 # list(glob(os.getcwd()+"/**"))
+cwd = os.getcwd()
+#st.set_option('server.maxUploadSize', 1024)
 
 
 def val_count(tmp: pd.Series):
@@ -74,6 +79,31 @@ def set_num_type(i):
         return int(i)
     else:
         return i
+
+
+#@dispatch(list)
+def to_tuples(l):
+    if len(l) <= 1:
+        return []
+    if len(l) == 2:
+        return [tuple(l)]
+    return list(zip(l, l[1:] + [l[0]]))
+
+
+# @dispatch(np.ndarray)
+# def to_tuples(l):
+#     if len(l) <= 1:
+#         return []
+#     if len(l) == 2:
+#         return [tuple(l)]
+#     return list(zip(l, np.roll(l, -1)))
+
+
+def unique_list(seq):
+    seq = collapse(seq)
+    seen = set([None])
+    seen_add = seen.add
+    return [x for x in seq if not (x in seen or seen_add(x))]
 
 
 def missing_zero_values_2(df, corr=True):
@@ -126,6 +156,13 @@ def get_table_download_link(df):
     return href
 
 
+def export_csv(data, filename="data.csv"):
+    if isinstance(data, pd.DataFrame):
+        data = data.to_csv(index=False)
+    b64 = base64.b64encode(data.encode()).decode()
+    return f'<a href="data:file/text;base64,{b64}" download="{filename}">Click here to download CSV</a>'
+
+
 def data_distribution(p, split_dict, sort_dict={}):
     df = p.copy()
     if len(sort_dict) == 0:
@@ -148,10 +185,6 @@ def data_distribution(p, split_dict, sort_dict={}):
     return k
 
 
-cwd = os.getcwd()
-AV = AutoViz_Class()
-
-
 def run_eda(df, dep_var="", chosen_val='Pandas Profiling'):
     if chosen_val == 'Pandas Profiling':
         pr = ProfileReport(df, explorative=True)
@@ -162,7 +195,7 @@ def run_eda(df, dep_var="", chosen_val='Pandas Profiling'):
                          target_feat=dep_var)
         rep.show_html()
     elif chosen_val == 'Autoviz':
-        #AV = AutoViz_Class()
+        AV = AutoViz_Class()
         chart_format = 'jpg'
 
         dft = AV.AutoViz(
@@ -187,8 +220,7 @@ def run_eda(df, dep_var="", chosen_val='Pandas Profiling'):
                 glob(cwd +
                      f"/AutoViz_Plots/{stored_folder}/*.{chart_format}")):
 
-            image = Image.open(i)
-            st.image(image)
+            st.image(Image.open(i))
     # else:
     #     st.table(DataFrameSummary(df))
 
@@ -208,7 +240,7 @@ st.set_page_config(  # Alternate names: setup_page, page, layout
     layout="wide",
     initial_sidebar_state="auto",  # Can be "auto", "expanded", "collapsed"
     # String or None. Strings get appended with "• Streamlit".
-    page_title='ML-Hub',
+    page_title='ML-hub',
     page_icon=None,  # String, anything supported by st.image, or None.
 )
 
@@ -218,7 +250,7 @@ option_dict = {
     'NLP': ['Sentiment Analysis', 'LDA', 'QDA', 'NER'],
     'Zero-Shot Topic Classification': ['sentiment', 'labels', 'both'],
     'Time Series': ['model1', 'model2'],
-    'Network Graph': ['Undirected', 'Directed', 'Bidirected'],
+    'Network Graph': ['Columnar', 'Chain'],
     'Clustering': ['KMeans', 'KModes', 'DBSCAN', 'AgglomerativeClustering'],
     'Classification Models': [
         'Logistic', 'Naive_Bayes', 'KNN', 'DecisionTree', 'RandomForest',
@@ -279,15 +311,8 @@ option = st.sidebar.selectbox('Select a task', list(option_dict.keys()))
 #     option_dict.get(option))
 
 # st.title(f"{option}-{option2}")
-
+st.title('Project Poseidon')
 uploaded_file = st.file_uploader("Upload a dataset")
-
-#beta columns
-# num = st.selectbox('select num', list(range(10)))
-# a = st.beta_columns(num)
-# p = [0] * len(a)
-# for i in range(len(a)):
-#     p[i] = a[i].number_input(f"enter value {str(i)}", 0, 100, value=50, step=1)
 
 #st.write(uploaded_file)
 #help(st.number_input)
@@ -298,10 +323,12 @@ if uploaded_file is not None:
     st.subheader("Sample Data")
     st.write(df.sample(5))
     st.write(df.shape)
+
     # df_dtypes = pd.DataFrame(df.dtypes).reset_index()
     # df_dtypes.columns = ['column', 'dtype']
     # st.subheader("Data Types")
     # st.write(df_dtypes)
+
     st.subheader("Initial Analysis")
 
     if st.checkbox('Run Initial Analysis'):
@@ -312,35 +339,35 @@ if uploaded_file is not None:
     # st.write(type(drop_cols))
     # st.write(drop_cols)
     df = df.drop(drop_cols, axis=1, errors='ignore')
+    columns = list(df.columns)
 
     if option == 'Exploratory Data Analysis':
         option2 = st.sidebar.radio('Select a task ', option_dict.get(option))
         dep_var = st.sidebar.selectbox('select dependent variable',
-                                       [""] + list(df.columns))
+                                       [""] + columns)
 
     elif option == 'Zero-Shot Topic Classification':
 
         labels = st.text_input('input labels', 'positive,negative')
         labels = labels.split(",")
-        text_col = st.selectbox('select text column', list(df.columns))
+        text_col = st.selectbox('select text column', columns)
         num_comments = st.slider('number of samples', 1, 1000, step=10)
         st.write(text_col)
     elif option == 'Time Series':
         option2 = st.sidebar.multiselect('Select forecasting models',
                                          option_dict.get(option))
-        ts_cols = st.multiselect('select date,value columns', list(df.columns))
+        ts_cols = st.multiselect('select date,value columns', columns)
 
     elif option in ['Classification Models', 'Regression Models']:
         option2 = st.sidebar.multiselect(f'Select {option}',
                                          option_dict.get(option))
         st.sidebar.info(
             "If only one model is chosen, dummy model is used for comparision")
-        y_label = st.sidebar.selectbox("Select Dependant Variable", df.columns)
+        y_label = st.sidebar.selectbox("Select Dependant Variable", columns)
         split_type = st.sidebar.radio('split type', ['Random', 'Ordered'])
         order_map = dict({})
         if split_type == 'Ordered':
-            order_cols = st.sidebar.multiselect('order by columns',
-                                                list(df.columns))
+            order_cols = st.sidebar.multiselect('order by columns', columns)
             order_map = dict(
                 zip(order_cols, [
                     st.sidebar.selectbox(f'{i} - ascending', [True, False],
@@ -370,15 +397,6 @@ if uploaded_file is not None:
             st.sidebar.subheader(k)
             st.subheader(k)
             tmp = dict(zip(v, [0] * len(v)))
-            #
-            # for j in v:
-            #     tmp[j] = set_num_type(
-            #         st.sidebar.number_input(f" {k} -{j}",
-            #                                 0.0,
-            #                                 1000.0,
-            #                                 value=1.0,
-            #                                 step=0.01,
-            #                                 key=f'{k}-{j}'))
 
             mod_a = st.beta_columns(len(v))
             for j in range(len(v)):
@@ -389,6 +407,15 @@ if uploaded_file is not None:
                     value=1.0,
                     step=0.01,
                     key=f'{k}-{v[j]}'))
+
+            # for j in v:
+            #     tmp[j] = set_num_type(
+            #         st.sidebar.number_input(f" {k} -{j}",
+            #                                 0.0,
+            #                                 1000.0,
+            #                                 value=1.0,
+            #                                 step=0.01,
+            #                                 key=f'{k}-{j}'))
 
             if option == 'Classification Models':
                 models.append(model_map_class[k](**tmp))
@@ -432,11 +459,32 @@ if uploaded_file is not None:
     #         parameters[k] = st.sidebar.number_input(
     #             f"number of iterations -{k} ", 10, 1000, step=10, key=k)
     #     st.write(parameters)
+
     elif option == 'Network Graph':
         option2 = st.sidebar.selectbox('Select Network Type',
                                        option_dict.get(option))
-        option3 = st.sidebar.selectbox('Select weighted Type',
-                                       ['unweighted', 'weighted'])
+
+        if option2 == 'Columnar':
+            directed, weighted = st.sidebar.beta_columns(2)
+            directed = directed.checkbox('Is Directed')
+            weighted = weighted.checkbox('Is Weighted')
+            st.markdown("## Nodes")
+            src, dest = st.beta_columns(2)
+            src = src.selectbox('select Source column', columns)
+            dest = dest.selectbox('select Destination column',
+                                  list(df.columns))
+            if weighted:
+                st.markdown('## Weights')
+                src_wt, dest_wt, edge_wt = st.beta_columns(3)
+                src_wt = src_wt.selectbox('select Source weight column',
+                                          [None] + columns)
+                dest_wt = dest_wt.selectbox('select Destination weight column',
+                                            [None] + columns)
+                edge_wt = edge_wt.selectbox('select Edge weight column',
+                                            [None] + columns)
+        elif option2 == 'Chain':
+            st.markdown("## Chain")
+            node_col = st.selectbox('select Chain column', columns)
 
     left_button, right_button = st.beta_columns(2)
 
@@ -530,7 +578,33 @@ if uploaded_file is not None:
                                      test[y_label]))
 
                     trained_models.append(i)
+            elif option == 'Network Graph':
 
+                if option2 == 'Chain':
+                    #st.write(df[node_col].map(to_tuples))
+                    S = igraph.Graph()
+                    chains = df[node_col].apply(lambda x: x.replace('[', '').
+                                                replace(']', '').split(','))
+                    vertices = unique_list(chains)
+                    edges = list(
+                        unique_everseen(chain.from_iterable(
+                            map(to_tuples, chains)),
+                                        key=frozenset))
+
+                    S.add_vertices(vertices)
+                    S.add_edges(edges)
+
+                elif option2 == 'Columnar':
+                    if weighted:
+                        S = igraph.Graph.DataFrame(df[[src, dest,
+                                                       edge_wt]].astype(str),
+                                                   directed=directed)
+                    else:
+                        S = igraph.Graph.DataFrame(df[[src, dest]].astype(str),
+                                                   directed=directed)
+                st.write(S)
+                # st.write(list(S.es.attributes()))
+                # st.write(list(S.vs))
             else:
                 pass
         st.write(datetime.now() - start)
@@ -539,5 +613,5 @@ if uploaded_file is not None:
 
 # a=np.random.choice(range(10),size=100)
 # np.split(a,[10,30,40])
-
+# S.vs.attributes
 st.success("Done")
