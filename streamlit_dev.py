@@ -603,8 +603,10 @@ if uploaded_file is not None:
                         S = igraph.Graph.DataFrame(df[[src, dest]].astype(str),
                                                    directed=directed)
                 st.write(S)
+
+                st.write(list(S.clusters()))
                 # st.write(list(S.es.attributes()))
-                # st.write(list(S.vs))
+                st.write(list(S.vs))
             else:
                 pass
         st.write(datetime.now() - start)
