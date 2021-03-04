@@ -10,6 +10,7 @@ from glob import glob
 from itertools import *
 from operator import *
 
+import cv2
 import dask.dataframe as dd
 import gensim
 import gensim.corpora as corpora
@@ -19,6 +20,7 @@ import matplotlib.pyplot as plt
 import networkx as nx
 import nltk
 import numpy as np
+import openpyxl
 import pandas as pd
 import plotly.express as px
 import pyLDAvis
@@ -27,13 +29,15 @@ import seaborn as sns
 import spacy
 import streamlit as st
 import streamlit.components.v1 as components
+import streamlit_theme as stt
 import sweetviz as sv
 import vaex
 from autoviz.AutoViz_Class import AutoViz_Class
 from catboost import CatBoostClassifier, CatBoostRegressor
-from dataprep.eda import plot, plot_missing
+#from dataprep.eda import plot, plot_missing
 from gensim.models import CoherenceModel
 from gensim.utils import simple_preprocess
+from igraph import plot as igplot
 from IPython import get_ipython
 from lightgbm import LGBMClassifier, LGBMRegressor
 from more_itertools import *
@@ -57,10 +61,24 @@ from transformers import pipeline
 from wordcloud import STOPWORDS, WordCloud
 from xgboost import XGBClassifier, XGBRegressor
 
+#stt.set_theme({'primary': '#1b3388'})
+
 #import SessionState
 # list(glob(os.getcwd()+"/**"))
 cwd = os.getcwd()
 #st.set_option('server.maxUploadSize', 1024)
+
+#st.title('Project Poseidon')
+
+st.set_page_config(  # Alternate names: setup_page, page, layout
+    # Can be "centered" or "wide". In the future also "dashboard", etc.
+    layout="wide",
+    initial_sidebar_state="auto",  # Can be "auto", "expanded", "collapsed"
+    # String or None. Strings get appended with "• Streamlit".
+    page_title='ML-hub',
+    page_icon=None,  # String, anything supported by st.image, or None.
+)
+st.header("Welcome")
 
 
 def val_count(tmp: pd.Series):
@@ -106,6 +124,7 @@ def unique_list(seq):
     return [x for x in seq if not (x in seen or seen_add(x))]
 
 
+@st.cache
 def missing_zero_values_2(df, corr=True):
 
     num_types = [
@@ -235,16 +254,8 @@ def run_zsc(trimmed_df, text_col, labels):
     return trimmed_df
 
 
-st.set_page_config(  # Alternate names: setup_page, page, layout
-    # Can be "centered" or "wide". In the future also "dashboard", etc.
-    layout="wide",
-    initial_sidebar_state="auto",  # Can be "auto", "expanded", "collapsed"
-    # String or None. Strings get appended with "• Streamlit".
-    page_title='ML-hub',
-    page_icon=None,  # String, anything supported by st.image, or None.
-)
-
 option_dict = {
+    'Data Exploration': ['Plots', 'Maps', 'Texts'],
     'Exploratory Data Analysis':
     ['Pandas Profiling', 'Autoviz', 'Sweetviz', 'Summary Table'],
     'NLP': ['Sentiment Analysis', 'LDA', 'QDA', 'NER'],
@@ -260,7 +271,8 @@ option_dict = {
         'Logistic', 'Naive_Bayes', 'KNN', 'DecisionTree', 'RandomForest',
         'LightGBM', 'AdaBoost', 'CatBoost', 'XGBoost', 'TPOT', 'SVM'
     ],
-    'Image Recognition': ['Object Detection', 'Facial expression', 'OCR']
+    'Image Recognition':
+    ['Play With Image', 'Object Detection', 'Facial expression', 'OCR']
 }
 
 # lgbm_dict={
@@ -305,19 +317,90 @@ model_map_reg = {
 st.sidebar.title('ML-Hub')
 option = st.sidebar.selectbox('Select a task', list(option_dict.keys()))
 
-# st.sidebar.title('ML-Hub')
-# option2 = st.sidebar.selectbox(
-#     'Select a task from this',
-#     option_dict.get(option))
+uploaded_file = None
 
-# st.title(f"{option}-{option2}")
-st.title('Project Poseidon')
-uploaded_file = st.file_uploader("Upload a dataset")
+read_dict = {
+    'csv': pd.read_csv,
+    'pickle': pd.read_pickle,
+    'xlsx': pd.read_excel,
+    'parquet': pd.read_parquet
+}
 
+
+def file_upload(txt, data_type='csv'):
+    data_type = st.radio('select datatype',
+                         ['csv', 'pickle', 'xlsx', 'parquet'])
+
+    return st.file_uploader(txt), read_dict[data_type]
+
+
+if option not in ['Image Recognition']:
+    uploaded_file, read_file = file_upload("Upload a dataset")
+else:
+    input_type = st.radio('Input Type', ['URL', 'File', 'Live'])
+    if input_type == 'File':
+        input_file, read_file = file_upload("Upload File")
+    elif input_type == 'URL':
+        input_file = st.text_input("URL")
+    else:
+        st.subheader("Webcam Live Feed")
+        run = st.radio('to run', ['run', 'stop'])
+        FRAME_WINDOW = st.image([])
+
+        camera = cv2.VideoCapture(0)
+        if run == 'run':
+            mirror = st.checkbox('Mirror')
+
+        face_cascade = cv2.CascadeClassifier(cwd + '/haarcascades/face.xml')
+
+        # https://github.com/Itseez/opencv/blob/master/data/haarcascades/haarcascade_eye.xml
+        # Trained XML file for detecting eyes
+        eye_cascade = cv2.CascadeClassifier(cwd + '/haarcascades/eye.xml')
+
+        while run == 'run':
+            ret, img = camera.read()
+            frame = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)  #COLOR_BGR2RGB)
+            # st.write(np.size(frame))
+
+            faces = face_cascade.detectMultiScale(frame, 1.3, 5)
+            for (x, y, w, h) in faces:
+                # To draw a rectangle in a face
+                cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 255, 0), 2)
+                roi_gray = frame[y:y + h, x:x + w]
+
+                # roi_color = img[y:y + h, x:x + w]
+                #st.write(np.size(roi_gray))
+                # Detects eyes of different sizes in the input image
+                eyes = eye_cascade.detectMultiScale(roi_gray)
+                #To draw a rectangle in eyes
+                for (ex, ey, ew, eh) in eyes:
+                    cv2.rectangle(roi_gray, (ex, ey), (ex + ew, ey + eh),
+                                  (0, 127, 255), 2)
+
+                # frame[y - 25:y + h + 25,
+                #       x - 20:x + w + 20] = frame[y - 25:y + h + 25,
+                #                                  x - 20:x + w + 20][::-1]
+
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            org = (50, 50)
+            fontScale = 1
+            color = (255, 0, 0)
+            thickness = 2
+            frame = cv2.putText(frame, 'Dinesh', org, font, fontScale, color,
+                                thickness, cv2.LINE_AA)
+            if mirror:
+                FRAME_WINDOW.image(frame[:, ::-1])
+            else:
+                FRAME_WINDOW.image(frame)
+
+        else:
+            st.write('Stopped')
+            camera.release()
+            cv2.destroyAllWindows()
 #st.write(uploaded_file)
 #help(st.number_input)
 if uploaded_file is not None:
-    df = pd.read_csv(uploaded_file)
+    df = read_file(uploaded_file)
     #df = vaex.read_csv(uploaded_file)
     st.success('Successfully loaded the file {}'.format(uploaded_file.name))
     st.subheader("Sample Data")
@@ -356,7 +439,16 @@ if uploaded_file is not None:
     elif option == 'Time Series':
         option2 = st.sidebar.multiselect('Select forecasting models',
                                          option_dict.get(option))
-        ts_cols = st.multiselect('select date,value columns', columns)
+        date_col, value_col = st.beta_columns(2)
+        date_col = date_col.selectbox('choose date col', columns)
+        value_col = value_col.selectbox('choose value col', columns)
+
+        freq = st.radio('select frequency', ['1D', '1W', '1M', '1Y'])
+
+        st.write(
+            df.set_index(df[date_col].astype('datetime64[D]'))
+            [value_col].resample(freq).sum())
+        #st.multiselect('select date,value columns', columns)
 
     elif option in ['Classification Models', 'Regression Models']:
         option2 = st.sidebar.multiselect(f'Select {option}',
@@ -394,14 +486,14 @@ if uploaded_file is not None:
         models = []
         #st.write(parameters)
         for k, v in parameters:
-            st.sidebar.subheader(k)
+            #st.sidebar.subheader(k)
             st.subheader(k)
             tmp = dict(zip(v, [0] * len(v)))
 
             mod_a = st.beta_columns(len(v))
             for j in range(len(v)):
                 tmp[v[j]] = set_num_type(mod_a[j].number_input(
-                    f" {k} -{v[j]}",
+                    f"{v[j]}",
                     0.0,
                     1000.0,
                     value=1.0,
@@ -423,6 +515,7 @@ if uploaded_file is not None:
                 models.append(model_map_reg[k](**tmp))
 
         st.write(models)
+        st.sidebar.subheader('Metrics')
 
         # try:
         #     st.write(models[0].get_params())
@@ -526,8 +619,11 @@ if uploaded_file is not None:
                 # if pressed_3:
                 #     result =label_vals.title()
                 #     st.success(result)
-                zsc_df.to_csv('/Users/apple/Desktop/zsc_df.csv')
-                st.write('noted')
+
+                st.markdown(export_csv(init_df), unsafe_allow_html=True)
+                #zsc_df.to_csv('/Users/apple/Desktop/zsc_df.csv')
+
+                st.write('ZSC Done')
 
             elif option == 'Classification Models':
                 st.markdown("### Chosen models")
@@ -546,11 +642,14 @@ if uploaded_file is not None:
                     st.write(train.dtypes.value_counts())
                     i.fit(train.drop(y_label, axis=1),
                           le.fit_transform(train[y_label].astype(str)))
-                    st.write('val')
-                    st.write(
-                        i.score(val.drop(y_label, axis=1),
-                                le.transform(val[y_label].astype(str))))
-                    st.write('test')
+                    st.subheader('val')
+                    if len(val) > 0:
+                        st.write(
+                            i.score(val.drop(y_label, axis=1),
+                                    le.transform(val[y_label].astype(str))))
+                    else:
+                        st.write('No Data')
+                    st.subheader('test')
                     st.write(
                         i.score(test.drop(y_label, axis=1),
                                 le.transform(test[y_label].astype(str))))
@@ -571,9 +670,13 @@ if uploaded_file is not None:
                     st.dataframe(train.head())
                     st.write(train.dtypes.value_counts())
                     i.fit(train.drop(y_label, axis=1), train[y_label])
-                    st.write('val')
-                    st.write(i.score(val.drop(y_label, axis=1), val[y_label]))
-                    st.write('test')
+                    st.subheader('val')
+                    if len(val) > 0:
+                        st.write(
+                            i.score(val.drop(y_label, axis=1), val[y_label]))
+                    else:
+                        st.write('No Data')
+                    st.subheader('test')
                     st.write(i.score(test.drop(y_label, axis=1),
                                      test[y_label]))
 
@@ -607,6 +710,8 @@ if uploaded_file is not None:
                 st.write(list(S.clusters()))
                 # st.write(list(S.es.attributes()))
                 st.write(list(S.vs))
+                st.write(f"vertex count {S.vcount()}")
+                st.write(f"edge count {S.ecount()}")
             else:
                 pass
         st.write(datetime.now() - start)
