@@ -1,5 +1,6 @@
 import base64
 import gc
+import io
 import os
 import re
 import time
@@ -10,6 +11,7 @@ from glob import glob
 from itertools import *
 from operator import *
 
+# import bamboolib as bam
 import cv2
 import dask.dataframe as dd
 import gensim
@@ -26,19 +28,22 @@ import plotly.express as px
 import pyLDAvis
 import pyLDAvis.gensim
 import seaborn as sns
+import sktime
 import spacy
 import streamlit as st
-import streamlit.components.v1 as components
+import streamlit.components.v1 as stc
 import streamlit_theme as stt
 import sweetviz as sv
+import sympy
+import tsboost
 import vaex
 from autoviz.AutoViz_Class import AutoViz_Class
 from catboost import CatBoostClassifier, CatBoostRegressor
-#from dataprep.eda import plot, plot_missing
+# from dataprep.eda import plot, plot_missing
 from gensim.models import CoherenceModel
 from gensim.utils import simple_preprocess
 from igraph import plot as igplot
-from IPython import get_ipython
+# from IPython import get_ipython
 from lightgbm import LGBMClassifier, LGBMRegressor
 from more_itertools import *
 from multipledispatch import dispatch
@@ -47,7 +52,10 @@ from nltk.sentiment import SentimentAnalyzer, SentimentIntensityAnalyzer
 from nltk.stem import WordNetLemmatizer
 from pandas_profiling import ProfileReport
 from pandas_summary import DataFrameSummary
+# from pandas_ui import get_df, get_meltdf, get_pivotdf
 from PIL import Image
+# pipreqs
+from prophet import Prophet
 from sklearn.ensemble import (AdaBoostClassifier, AdaBoostRegressor,
                               RandomForestClassifier, RandomForestRegressor)
 from sklearn.linear_model import LogisticRegression
@@ -55,20 +63,24 @@ from sklearn.metrics import *
 from sklearn.preprocessing import (LabelEncoder, MinMaxScaler, Normalizer,
                                    OneHotEncoder, PowerTransformer,
                                    QuantileTransformer, StandardScaler)
+from sktime.performance_metrics.forecasting import smape_loss
+from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
+from statsmodels.tsa.holtwinters import ExponentialSmoothing as HWES
+from statsmodels.tsa.stattools import adfuller, kpss
 from streamlit_pandas_profiling import st_profile_report
 from textblob import TextBlob
 from transformers import pipeline
 from wordcloud import STOPWORDS, WordCloud
 from xgboost import XGBClassifier, XGBRegressor
 
-#stt.set_theme({'primary': '#1b3388'})
+# stt.set_theme({'primary': '#1b3388'})
 
-#import SessionState
+# import SessionState
 # list(glob(os.getcwd()+"/**"))
 cwd = os.getcwd()
-#st.set_option('server.maxUploadSize', 1024)
+# st.set_option('server.maxUploadSize', 1024)
 
-#st.title('Project Poseidon')
+# st.title('Project Poseidon')
 
 st.set_page_config(  # Alternate names: setup_page, page, layout
     # Can be "centered" or "wide". In the future also "dashboard", etc.
@@ -78,7 +90,136 @@ st.set_page_config(  # Alternate names: setup_page, page, layout
     page_title='ML-hub',
     page_icon=None,  # String, anything supported by st.image, or None.
 )
+st.write(
+    '<style>div.row-widget.stRadio > div{flex-direction:row;}</style>', unsafe_allow_html=True)
+
+st.markdown('# Project Poseidon')
+
 st.header("Welcome")
+
+
+option_dict = {
+    'Data Exploration': ['Lineplot', 'Barplot', 'Histogram', 'Piechart', 'Boxplot', 'Scatterplot',  'Calplot', 'Contour', 'Violin', 'map', 'Sankey', 'Jointplot', 'Pairplot', 'kde'],
+    'Exploratory Data Analysis':
+    ['Pandas Profiling', 'Autoviz', 'Sweetviz', 'Summary Table'],
+    'NLP': ['Sentiment Analysis', 'LDA', 'QDA', 'NER'],
+    'Zero-Shot Topic Classification': ['sentiment', 'labels', 'both'],
+    'Time Series': ['naive', 'average', 'ARIMA', 'Exponential Smoothing', 'FFT', 'Prophet', 'Theta Forecaster', 'RegressionForecaster'],
+    'Network Graph': ['Columnar', 'Chain'],
+    'Clustering': ['KMeans', 'KModes', 'DBSCAN', 'AgglomerativeClustering'],
+    'Classification Models': [
+        'Logistic', 'Naive_Bayes', 'KNN', 'DecisionTree', 'RandomForest',
+        'LightGBM', 'AdaBoost', 'CatBoost', 'XGBoost', 'TPOT', 'SVM'
+    ],
+    'Regression Models': [
+        'Logistic', 'Naive_Bayes', 'KNN', 'DecisionTree', 'RandomForest',
+        'LightGBM', 'AdaBoost', 'CatBoost', 'XGBoost', 'TPOT', 'SVM'
+    ],
+    'Image Recognition':
+    ['Play With Image', 'Object Detection', 'Facial expression', 'OCR'],
+    'Custom Functions':
+    ['func1', 'func2']
+}
+# lgbm_dict={
+#  'learning_rate': 0.1,
+#  'max_depth': -1,
+#  'n_estimators': 100,
+#  'n_jobs': -1,
+#  'num_leaves': 31,
+#  'reg_alpha': 0.0,
+#  'reg_lambda': 0.0,}
+#  xgb_dict={}
+
+model_param_map = {
+    'CatBoost':
+    ['iterations', 'max_depth', 'num_leaves', 'learning_rate', 'reg_lambda'],
+    'LightGBM': [
+        'n_estimators', 'max_depth', 'n_jobs', 'learning_rate', 'num_leaves',
+        'reg_alpha', 'reg_lambda'
+    ],
+    'XGBoost': [
+        'n_estimators', 'max_depth', 'n_jobs', 'learning_rate', 'reg_alpha',
+        'reg_lambda'
+    ],
+    'RandomForest': ['n_estimators', 'max_depth', 'n_jobs', 'max_features'],
+    'Logistic': ['max_iter', 'n_jobs', 'C']
+}
+
+model_map_class = {
+    'CatBoost': CatBoostClassifier,
+    'LightGBM': LGBMClassifier,
+    'XGBoost': XGBClassifier,
+    'RandomForest': RandomForestClassifier,
+    'Logistic': LogisticRegression
+}
+model_map_reg = {
+    'CatBoost': CatBoostRegressor,
+    'LightGBM': LGBMRegressor,
+    'XGBoost': XGBRegressor,
+    'RandomForest': RandomForestRegressor
+}
+
+
+ts_metrics = ['mape', 'me', 'mae', 'mpe', 'rmse', 'corr', 'smape_loss']
+
+
+def forecast_performance(forecast, actual):
+    mape = np.mean(np.abs(forecast - actual) / np.abs(actual))  # MAPE
+    me = np.mean(forecast - actual)             # ME
+    mae = np.mean(np.abs(forecast - actual))    # MAE
+    mpe = np.mean((forecast - actual) / actual)   # MPE
+    rmse = np.mean((forecast - actual)**2)**.5  # RMSE
+    corr = np.corrcoef(forecast, actual)[0, 1]   # corr
+    mins = np.amin(np.hstack([forecast[:, None],
+                              actual[:, None]]), axis=1)
+    maxs = np.amax(np.hstack([forecast[:, None],
+                              actual[:, None]]), axis=1)
+    smape_loss_val = smape_loss(pd.Series(actual), pd.Series(forecast))
+    return({'mape': mape, 'me': me, 'mae': mae,
+            'mpe': mpe, 'rmse': rmse, 'corr': corr, 'smape_loss': smape_loss_val})
+
+
+def naive_model(df, fh, seasonality):
+    lag = st.sidebar.number_input('lag', 1, 10)
+    return df[-lag - fh:-lag].reset_index(drop=True)
+
+
+def average_model(df,  fh, seasonality):
+    period = st.sidebar.number_input('period', 3, 15)
+    return df.rolling(period).mean().iloc[-1 - fh:-1].reset_index(drop=True)
+
+
+def hwes_model(df, fh, seasonality):
+    model = HWES(df.iloc[:-fh], seasonal_periods=seasonality,
+                 trend='add', seasonal='add')
+    fitted = model.fit()
+
+    return fitted.forecast(steps=fh).reset_index(drop=True)
+
+
+# ,'ARIMA':arima_model,'Exponential Smoothing':hwes_model,'Prophet':prophet_model}
+#
+ts_model_map = {'naive': naive_model, 'average': average_model,
+                'Exponential Smoothing': hwes_model}
+#ts_model_parameters={'naive':['lag'],'average':['period'],'ARIMA':['p','d','q'],'Exponential Smoothing':[],'Prophet':[]}
+
+
+def timeseries_forecasting(df, models, fh, seasonality):
+    train = df.iloc[:-fh]
+    test = df.iloc[-fh:]
+    test_df = pd.DataFrame(test).reset_index()
+
+    for i in models:
+        st.write(i)
+        pred = ts_model_map.get(i)(df, fh, seasonality)
+        # st.write(pred)
+        test_df = pd.concat([test_df, pred],
+                            axis=1, ignore_index=False)
+
+    st.markdown("<p style='color:blue;'> Result</p>",
+                unsafe_allow_html=True)
+    test_df.columns = ['date', 'actual'] + models
+    st.dataframe(test_df)
 
 
 def val_count(tmp: pd.Series):
@@ -99,7 +240,7 @@ def set_num_type(i):
         return i
 
 
-#@dispatch(list)
+# @dispatch(list)
 def to_tuples(l):
     if len(l) <= 1:
         return []
@@ -124,7 +265,7 @@ def unique_list(seq):
     return [x for x in seq if not (x in seen or seen_add(x))]
 
 
-@st.cache
+# @st.cache
 def missing_zero_values_2(df, corr=True):
 
     num_types = [
@@ -197,11 +338,10 @@ def data_distribution(p, split_dict, sort_dict={}):
     # df['TG_offer'] = None
     l1 = list(
         map(lambda x: int(x * len(df) / 100), accumulate(split_dict.values())))
-    k = np.split(df, l1[:-1])
     # print(df_len, [len(i) for i in k], len(df[df.TG_group == 'control']))
     # for i, j in enumerate(split_dict.keys()):
     #     k[i]['group_dist'] = j
-    return k
+    return np.split(df, l1[:-1])
 
 
 def run_eda(df, dep_var="", chosen_val='Pandas Profiling'):
@@ -226,8 +366,8 @@ def run_eda(df, dep_var="", chosen_val='Pandas Profiling'):
             verbose=2,
             lowess=False,
             chart_format=chart_format,
-            max_rows_analyzed=len(df),  #150000,
-            max_cols_analyzed=df.shape[1])  #30
+            max_rows_analyzed=len(df),  # 150000,
+            max_cols_analyzed=df.shape[1])  # 30
         st.write(dft.head())
         st.write('Autoviz')
         # st.write(os.getcwd()+f"/AutoViz_Plots/empty_string/*.{chart_format}")
@@ -240,6 +380,8 @@ def run_eda(df, dep_var="", chosen_val='Pandas Profiling'):
                      f"/AutoViz_Plots/{stored_folder}/*.{chart_format}")):
 
             st.image(Image.open(i))
+    elif chosen_val == 'Summary Table':
+        get_df(df)
     # else:
     #     st.table(DataFrameSummary(df))
 
@@ -254,70 +396,12 @@ def run_zsc(trimmed_df, text_col, labels):
     return trimmed_df
 
 
-option_dict = {
-    'Data Exploration': ['Plots', 'Maps', 'Texts'],
-    'Exploratory Data Analysis':
-    ['Pandas Profiling', 'Autoviz', 'Sweetviz', 'Summary Table'],
-    'NLP': ['Sentiment Analysis', 'LDA', 'QDA', 'NER'],
-    'Zero-Shot Topic Classification': ['sentiment', 'labels', 'both'],
-    'Time Series': ['model1', 'model2'],
-    'Network Graph': ['Columnar', 'Chain'],
-    'Clustering': ['KMeans', 'KModes', 'DBSCAN', 'AgglomerativeClustering'],
-    'Classification Models': [
-        'Logistic', 'Naive_Bayes', 'KNN', 'DecisionTree', 'RandomForest',
-        'LightGBM', 'AdaBoost', 'CatBoost', 'XGBoost', 'TPOT', 'SVM'
-    ],
-    'Regression Models': [
-        'Logistic', 'Naive_Bayes', 'KNN', 'DecisionTree', 'RandomForest',
-        'LightGBM', 'AdaBoost', 'CatBoost', 'XGBoost', 'TPOT', 'SVM'
-    ],
-    'Image Recognition':
-    ['Play With Image', 'Object Detection', 'Facial expression', 'OCR']
-}
-
-# lgbm_dict={
-#  'learning_rate': 0.1,
-#  'max_depth': -1,
-#  'n_estimators': 100,
-#  'n_jobs': -1,
-#  'num_leaves': 31,
-#  'reg_alpha': 0.0,
-#  'reg_lambda': 0.0,}
-#  xgb_dict={}
-
-model_param_map = {
-    'CatBoost':
-    ['iterations', 'max_depth', 'num_leaves', 'learning_rate', 'reg_lambda'],
-    'LightGBM': [
-        'n_estimators', 'max_depth', 'n_jobs', 'learning_rate', 'num_leaves',
-        'reg_alpha', 'reg_lambda'
-    ],
-    'XGBoost': [
-        'n_estimators', 'max_depth', 'n_jobs', 'learning_rate', 'reg_alpha',
-        'reg_lambda'
-    ],
-    'RandomForest': ['n_estimators', 'max_depth', 'n_jobs', 'max_features'],
-    'Logistic': ['max_iter', 'n_jobs', 'C']
-}
-
-model_map_class = {
-    'CatBoost': CatBoostClassifier,
-    'LightGBM': LGBMClassifier,
-    'XGBoost': XGBClassifier,
-    'RandomForest': RandomForestClassifier,
-    'Logistic': LogisticRegression
-}
-model_map_reg = {
-    'CatBoost': CatBoostRegressor,
-    'LightGBM': LGBMRegressor,
-    'XGBoost': XGBRegressor,
-    'RandomForest': RandomForestRegressor
-}
-
+################################################################################
 st.sidebar.title('ML-Hub')
 option = st.sidebar.selectbox('Select a task', list(option_dict.keys()))
 
 uploaded_file = None
+
 
 read_dict = {
     'csv': pd.read_csv,
@@ -329,7 +413,7 @@ read_dict = {
 
 def file_upload(txt, data_type='csv'):
     data_type = st.radio('select datatype',
-                         ['csv', 'pickle', 'xlsx', 'parquet'])
+                         list(read_dict.keys()))
 
     return st.file_uploader(txt), read_dict[data_type]
 
@@ -339,7 +423,8 @@ if option not in ['Image Recognition']:
 else:
     input_type = st.radio('Input Type', ['URL', 'File', 'Live'])
     if input_type == 'File':
-        input_file, read_file = file_upload("Upload File")
+        input_file = st.file_uploader(
+            "Upload File", type=['png', 'jpg', 'svg'])
     elif input_type == 'URL':
         input_file = st.text_input("URL")
     else:
@@ -359,7 +444,7 @@ else:
 
         while run == 'run':
             ret, img = camera.read()
-            frame = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)  #COLOR_BGR2RGB)
+            frame = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)  # COLOR_BGR2RGB)
             # st.write(np.size(frame))
 
             faces = face_cascade.detectMultiScale(frame, 1.3, 5)
@@ -369,10 +454,10 @@ else:
                 roi_gray = frame[y:y + h, x:x + w]
 
                 # roi_color = img[y:y + h, x:x + w]
-                #st.write(np.size(roi_gray))
+                # st.write(np.size(roi_gray))
                 # Detects eyes of different sizes in the input image
                 eyes = eye_cascade.detectMultiScale(roi_gray)
-                #To draw a rectangle in eyes
+                # To draw a rectangle in eyes
                 for (ex, ey, ew, eh) in eyes:
                     cv2.rectangle(roi_gray, (ex, ey), (ex + ew, ey + eh),
                                   (0, 127, 255), 2)
@@ -397,11 +482,31 @@ else:
             st.write('Stopped')
             camera.release()
             cv2.destroyAllWindows()
-#st.write(uploaded_file)
-#help(st.number_input)
+# st.write(uploaded_file)
+# help(st.number_input)
+
+
+def filter_df(df):
+    temp = df.select_dtypes(
+        include=['category', 'object', 'bool']).nunique().items()
+    temp = st.multiselect('select columns to filter', [
+                          i for i, j in temp if j < 10])
+    s = []
+    for i in temp:
+        col, value = st.beta_columns(2)
+        col.write(i)
+        chosen_value = value.multiselect(
+            'select values', df[i].unique(), key=i)
+        if chosen_value:
+            s = s + [(i, chosen_value)]
+    for fil in s:
+        df = df[df[fil[0]].isin(fil[1])]
+    return df
+
+
 if uploaded_file is not None:
     df = read_file(uploaded_file)
-    #df = vaex.read_csv(uploaded_file)
+    # df = vaex.read_csv(uploaded_file)
     st.success('Successfully loaded the file {}'.format(uploaded_file.name))
     st.subheader("Sample Data")
     st.write(df.sample(5))
@@ -415,14 +520,30 @@ if uploaded_file is not None:
     st.subheader("Initial Analysis")
 
     if st.checkbox('Run Initial Analysis'):
+        with st.beta_expander('Dataframe Description'):
+            st.write(df.describe(include='all', percentiles=[
+                     0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 0.95, 0.99]))
+
+        st.markdown('#### Additional Analysis')
         init_df = missing_zero_values_2(df)
         st.dataframe(init_df)
+
         st.markdown(get_table_download_link(init_df), unsafe_allow_html=True)
+
     drop_cols = st.multiselect("Drop Columns", list(df.columns))
     # st.write(type(drop_cols))
     # st.write(drop_cols)
+
     df = df.drop(drop_cols, axis=1, errors='ignore')
+
+    if st.checkbox('Filter Data'):
+        df = filter_df(df)
+
     columns = list(df.columns)
+
+    if option == 'Data Exploration':
+        option2 = st.sidebar.selectbox(
+            'Select a task ', option_dict.get(option))
 
     if option == 'Exploratory Data Analysis':
         option2 = st.sidebar.radio('Select a task ', option_dict.get(option))
@@ -436,19 +557,100 @@ if uploaded_file is not None:
         text_col = st.selectbox('select text column', columns)
         num_comments = st.slider('number of samples', 1, 1000, step=10)
         st.write(text_col)
+
     elif option == 'Time Series':
         option2 = st.sidebar.multiselect('Select forecasting models',
                                          option_dict.get(option))
+
         date_col, value_col = st.beta_columns(2)
-        date_col = date_col.selectbox('choose date col', columns)
-        value_col = value_col.selectbox('choose value col', columns)
+        date_col = date_col.selectbox('choose date col',  [
+                                      i for i in columns if df[i].dtype in ['datetime64[ns]', 'object']] + [None])
+        value_col = value_col.selectbox('choose value col', [
+            i for i in columns if df[i].dtype not in ['datetime64[ns]', 'object']])
 
-        freq = st.radio('select frequency', ['1D', '1W', '1M', '1Y'])
+        if date_col:
+            try:
+                start_date, end_date = st.beta_columns(2)
+                start_date = start_date.date_input(
+                    'start date', df[date_col].astype('datetime64[D]').min()).strftime('%Y-%m-%d')
+                end_date = end_date.date_input(
+                    'end_date', df[date_col].astype('datetime64[D]').max()).strftime('%Y-%m-%d')
+                freq = st.radio('select frequency', [
+                                '1D', '1W', '1M', '1Q', '1Y'])
+                custom_freq = st.text_input('custom_freq', '')
+                if custom_freq != '':
+                    freq = custom_freq
+                # st.write(df.set_index(df[date_col].astype('datetime64[D]'))
+                #          [value_col].resample(freq).sum())
+                df[date_col] = pd.to_datetime(df[date_col])
+                st.write(f"""
+                start_date: {start_date}
 
-        st.write(
-            df.set_index(df[date_col].astype('datetime64[D]'))
-            [value_col].resample(freq).sum())
-        #st.multiselect('select date,value columns', columns)
+                end_date: {end_date}
+                """)
+
+                df = df[df[date_col].between(start_date, end_date)]
+                df = df.set_index(df[date_col])[value_col].resample(freq).sum()
+
+                st.write(df)
+                # https://stats.stackexchange.com/questions/30569/what-is-the-difference-between-a-stationary-test-and-a-unit-root-test/235916#235916
+                test_1, test_2 = st.beta_columns(2)
+                with test_1:
+                    with st.beta_expander("ADF Test (Unit Root Test)"):
+                        regression = st.radio(
+                            'regression', ['c', 'ct', 'ctt', 'nc'])
+                        result = adfuller(df.values, regression=regression)
+
+                        st.write("<p style='color:green;'>H<sub>0</sub>: Non-Stationary</p>",
+                                 unsafe_allow_html=True)
+                        st.write(f'ADF Statistic: {result[0]}')
+                        st.write(f'p-value: {result[1]}')
+                        st.write(f'n-lags: {result[2]}')
+                        st.write(f'observations: {result[3]}')
+                        st.write('Critical Values:')
+                        for key, value in result[4].items():
+                            st.write(f"{key}: {value}")
+                        if result[1] <= 0.05:
+                            st.info("Hypothesis Rejected")
+                        else:
+                            st.warning('Test Inconclusive')
+                with test_2:
+                    with st.beta_expander("KPSS Test (Stationary Test)"):
+                        regression = st.radio(
+                            'regression', ['c', 'ct'])
+                        result = kpss(df.values, regression=regression)
+
+                        st.write("<p style='color:green;'>H<sub>0</sub>: Stationary</p>",
+                                 unsafe_allow_html=True)
+                        st.write(f'KPSS Statistic: {result[0]}')
+                        st.write(f'p-value: {result[1]}')
+                        st.write(f'n-lags: {result[2]}')
+                        st.write('Critical Values:')
+                        for key, value in result[3].items():
+                            st.write(f"{key}: {value}")
+                        if result[1] <= 0.05:
+                            st.info("Hypothesis Rejected")
+                        else:
+                            st.warning('Test Inconclusive')
+
+                if st.checkbox('Apply diff'):
+                    lag_diff = st.number_input('select lag ', 1, 10)
+
+                    df = df.diff(lag_diff).iloc[lag_diff:]
+                    st.write(df)
+                fh, seasonality = st.beta_columns(2)
+                fh = fh.number_input('select forecast horizon', 1, 20)
+                seasonality = seasonality.number_input(
+                    'select seasonality', 1, 365)
+
+                timeseries_forecasting(df, option2, fh, seasonality)
+                st.sidebar.markdown('## Metrics')
+                metrics = st.sidebar.multiselect('metrics', ts_metrics)
+            except:
+                st.error("Select column is not in date format")
+        else:
+            st.error("select valid date column")
+        # st.multiselect('select date,value columns', columns)
 
     elif option in ['Classification Models', 'Regression Models']:
         option2 = st.sidebar.multiselect(f'Select {option}',
@@ -477,16 +679,16 @@ if uploaded_file is not None:
         }
         st.sidebar.write(split_dict_vals)
 
-        #parameters = dict(zip(option2, [10] * len(option2)))
+        # parameters = dict(zip(option2, [10] * len(option2)))
         # for k, v in parameters.items():
         #     parameters[k] = st.sidebar.number_input(
         #         f" {k} -{v}", 10, 1000, v, step=10, key=k)
 
         parameters = [(i, model_param_map[i]) for i in option2]
         models = []
-        #st.write(parameters)
+        # st.write(parameters)
         for k, v in parameters:
-            #st.sidebar.subheader(k)
+            # st.sidebar.subheader(k)
             st.subheader(k)
             tmp = dict(zip(v, [0] * len(v)))
 
@@ -599,8 +801,8 @@ if uploaded_file is not None:
 
                 st.write(dep_var)
             elif option == 'Zero-Shot Topic Classification':
-                #label_cnt=int(st.text_input('input lables',1))
-                #label_dict=dict(zip(['label_'+str(i+1) for i in range(label_cnt)],['']*label_cnt))
+                # label_cnt=int(st.text_input('input lables',1))
+                # label_dict=dict(zip(['label_'+str(i+1) for i in range(label_cnt)],['']*label_cnt))
                 # for k,v in label_dict.items():
                 #     label=st.text_input(k,v)
                 #     st.write(label)
@@ -614,14 +816,14 @@ if uploaded_file is not None:
                 )
                 st.write(labels)
                 zsc_df = run_zsc(trimmed_df, text_col, labels)
-                st.write(zsc_df.head())
+                st.table(zsc_df.head())
                 # pressed_3=st.button('Submit',key='3')
                 # if pressed_3:
                 #     result =label_vals.title()
                 #     st.success(result)
 
                 st.markdown(export_csv(init_df), unsafe_allow_html=True)
-                #zsc_df.to_csv('/Users/apple/Desktop/zsc_df.csv')
+                # zsc_df.to_csv('/Users/apple/Desktop/zsc_df.csv')
 
                 st.write('ZSC Done')
 
@@ -636,7 +838,7 @@ if uploaded_file is not None:
                                                      order_map)
                 trained_models = []
                 for i in models:
-                    #st.subheader(i)
+                    # st.subheader(i)
                     st.dataframe(train.head())
                     le = LabelEncoder()
                     st.write(train.dtypes.value_counts())
@@ -666,7 +868,7 @@ if uploaded_file is not None:
                                                      order_map)
                 trained_models = []
                 for i in models:
-                    #st.subheader(i)
+                    # st.subheader(i)
                     st.dataframe(train.head())
                     st.write(train.dtypes.value_counts())
                     i.fit(train.drop(y_label, axis=1), train[y_label])
@@ -681,10 +883,27 @@ if uploaded_file is not None:
                                      test[y_label]))
 
                     trained_models.append(i)
+
             elif option == 'Network Graph':
+                st.markdown("### Example ")
+                # https://plotly.com/python/v3/igraph-networkx-comparison/
+                S = igraph.Graph(directed=True)
+                S.add_vertices([1, 2, 3, 4, 5, 6, 7, 8, 10])
+                S.vs['id'] = [1, 2, 3, 4, 5, 6, 7, 8]
+                S.vs['label'] = [1, 2, 3, 4, 5, 6, 7, 8]
+                S.add_edges([(1, 2), (2, 3), (4, 5), (1, 6)])
+                # igraph.drawing.plot(S,'test.png',layout=S.layout_lgl())
+
+                # import matplotlib.pyplot as plt
+                # fig,ax=plt.subplots()
+                # igraph.plot(S,target=ax)
+                out_png = igraph.drawing.plot(
+                    S, 'temp.png', layout=S.layout_lgl())
+                out_png.save('temp.png')
+                st.image('temp.png')
 
                 if option2 == 'Chain':
-                    #st.write(df[node_col].map(to_tuples))
+                    # st.write(df[node_col].map(to_tuples))
                     S = igraph.Graph()
                     chains = df[node_col].apply(lambda x: x.replace('[', '').
                                                 replace(']', '').split(','))
@@ -692,7 +911,7 @@ if uploaded_file is not None:
                     edges = list(
                         unique_everseen(chain.from_iterable(
                             map(to_tuples, chains)),
-                                        key=frozenset))
+                            key=frozenset))
 
                     S.add_vertices(vertices)
                     S.add_edges(edges)
@@ -712,13 +931,25 @@ if uploaded_file is not None:
                 st.write(list(S.vs))
                 st.write(f"vertex count {S.vcount()}")
                 st.write(f"edge count {S.ecount()}")
+                # igraph.drawing.plot(S,'test.png')
+            elif option == 'Time Series':
+                # fig, ax = plt.subplots(figsize=(5, 3))
+                st.pyplot(plot_pacf(df))
+                st.pyplot(plot_acf(df))
+
             else:
                 pass
-        st.write(datetime.now() - start)
 
-#help(st.number_input)
+        st.write(f"""
+        Time Taken:
 
-# a=np.random.choice(range(10),size=100)
-# np.split(a,[10,30,40])
-# S.vs.attributes
+        {datetime.now() - start}
+        """)
+        # st.balloons()
+
+# help(st.number_input)
+
+        # a=np.random.choice(range(10),size=100)
+        # np.split(a,[10,30,40])
+        # S.vs.attributes
 st.success("Done")
