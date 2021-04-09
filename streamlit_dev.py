@@ -160,33 +160,36 @@ model_map_reg = {
 }
 
 
-ts_metrics = ['mape', 'me', 'mae', 'mpe', 'rmse', 'corr', 'smape_loss']
+ts_metrics = ['mape', 'wmape', 'me', 'mae',
+              'mpe', 'rmse', 'corr', 'smape_loss']
 
 
 def forecast_performance(forecast, actual):
-    mape = np.mean(np.abs(forecast - actual) / np.abs(actual))  # MAPE
+    mape = np.mean(np.abs(forecast - actual) / np.abs(actual)) * 100  # MAPE
+    wmape = sum(np.abs(forecast - actual)) / sum(np.abs(actual)) * 100  # wmape
     me = np.mean(forecast - actual)             # ME
     mae = np.mean(np.abs(forecast - actual))    # MAE
-    mpe = np.mean((forecast - actual) / actual)   # MPE
+    mpe = np.mean((forecast - actual) / actual) * 100   # MPE
     rmse = np.mean((forecast - actual)**2)**.5  # RMSE
     corr = np.corrcoef(forecast, actual)[0, 1]   # corr
-    mins = np.amin(np.hstack([forecast[:, None],
-                              actual[:, None]]), axis=1)
-    maxs = np.amax(np.hstack([forecast[:, None],
-                              actual[:, None]]), axis=1)
-    smape_loss_val = smape_loss(pd.Series(actual), pd.Series(forecast))
-    return({'mape': mape, 'me': me, 'mae': mae,
+#     mins = np.amin(np.hstack([forecast[:,None],
+#                               actual[:,None]]), axis=1)
+#     maxs = np.amax(np.hstack([forecast[:,None],
+#                               actual[:,None]]), axis=1)
+    smape_loss_val = smape_loss(pd.Series(actual), pd.Series(forecast)) * 100
+    return({'mape': mape, 'wmape': wmape, 'me': me, 'mae': mae,
             'mpe': mpe, 'rmse': rmse, 'corr': corr, 'smape_loss': smape_loss_val})
 
 
 def naive_model(df, fh, seasonality):
     lag = st.sidebar.number_input('lag', 1, 10)
-    return df[-lag - fh:-lag].reset_index(drop=True)
+    return df[-lag - fh:-lag].values
 
 
 def average_model(df,  fh, seasonality):
     period = st.sidebar.number_input('period', 3, 15)
-    return df.rolling(period).mean().iloc[-1 - fh:-1].reset_index(drop=True)
+    # .reset_index(drop=True)
+    return df.rolling(period).mean().iloc[-1 - fh:-1].values
 
 
 def hwes_model(df, fh, seasonality):
@@ -194,18 +197,52 @@ def hwes_model(df, fh, seasonality):
                  trend='add', seasonal='add')
     fitted = model.fit()
 
-    return fitted.forecast(steps=fh).reset_index(drop=True)
+    return fitted.forecast(steps=fh).values
 
 
-# ,'ARIMA':arima_model,'Exponential Smoothing':hwes_model,'Prophet':prophet_model}
-#
+def fft_model(df, fh, seasonality):
+    x = df.iloc[:-fh].values
+    n = x.size
+    # number of harmonics in model
+    n_harm = st.sidebar.number_input('fft harmonics', 5, 100)
+    t = np.arange(0, n)
+    p = np.polyfit(t, x, 1)         # find linear trend in x
+    x_notrend = x - p[0] * t        # detrended x
+    x_freqdom = np.fft.fft(x_notrend)  # detrended x in frequency domain
+    f = np.fft.fftfreq(n)              # frequencies
+    indexes = range(n)
+    # sort indexes by frequency, lower -> higher
+    indexes = np.array(sorted(indexes, key=lambda i: np.absolute(f[i])))
+
+    t = np.arange(0, n + fh)
+    restored_sig = np.zeros(t.size)
+    for i in indexes[:1 + n_harm * 2]:
+        ampli = np.absolute(x_freqdom[i]) / n   # amplitude
+        phase = np.angle(x_freqdom[i])          # phase
+        restored_sig += ampli * np.cos(2 * np.pi * f[i] * t + phase)
+    return (restored_sig + p[0] * t)[-fh:]
+
+
+def prophet_model(df, fh, seasonality):
+    df = df.reset_index(drop=False)
+    df.columns = ['ds', 'y']
+    model = Prophet(daily_seasonality=False, yearly_seasonality=True,
+                    weekly_seasonality=False, interval_width=0.95)
+    model = model.add_seasonality(
+        name='custom', period=seasonality, fourier_order=5, prior_scale=0.02)
+    model.fit(df.iloc[:-fh])
+    return model.predict(df[-fh:][['ds']])['yhat'].values
+
+
+    # 'ARIMA':arima_model,
+    #
 ts_model_map = {'naive': naive_model, 'average': average_model,
-                'Exponential Smoothing': hwes_model}
+                'Exponential Smoothing': hwes_model, 'FFT': fft_model, 'Prophet': prophet_model}
 #ts_model_parameters={'naive':['lag'],'average':['period'],'ARIMA':['p','d','q'],'Exponential Smoothing':[],'Prophet':[]}
 
 
 def timeseries_forecasting(df, models, fh, seasonality):
-    train = df.iloc[:-fh]
+    #train = df.iloc[:-fh]
     test = df.iloc[-fh:]
     test_df = pd.DataFrame(test).reset_index()
 
@@ -213,13 +250,14 @@ def timeseries_forecasting(df, models, fh, seasonality):
         st.write(i)
         pred = ts_model_map.get(i)(df, fh, seasonality)
         # st.write(pred)
-        test_df = pd.concat([test_df, pred],
-                            axis=1, ignore_index=False)
+        test_df[i] = pred
+        #test_df = pd.concat([test_df, pred],axis=1, ignore_index=False)
 
     st.markdown("<p style='color:blue;'> Result</p>",
                 unsafe_allow_html=True)
     test_df.columns = ['date', 'actual'] + models
     st.dataframe(test_df)
+    return test_df
 
 
 def val_count(tmp: pd.Series):
@@ -265,7 +303,33 @@ def unique_list(seq):
     return [x for x in seq if not (x in seen or seen_add(x))]
 
 
+def highlight_abs_max(s):
+    '''
+    highlight the maximum in a Series yellow.
+    '''
+    is_max = s == s.abs().max()
+    return ['background-color: yellow' if v else '' for v in is_max]
+
+
+def highlight_abs_min(s):
+    '''
+    highlight the maximum in a Series yellow.
+    '''
+    is_min = s == s.abs().min()
+    return ['background-color: yellow' if v else '' for v in is_min]
+
+
+def color_null_red(val):
+    """
+    Takes a scalar and returns a string with
+    the css property `'color: red'` for negative
+    strings, black otherwise.
+    """
+    color = 'black' if val else 'red'
+    return 'color: %s' % color
 # @st.cache
+
+
 def missing_zero_values_2(df, corr=True):
 
     num_types = [
@@ -405,9 +469,9 @@ uploaded_file = None
 
 read_dict = {
     'csv': pd.read_csv,
-    'pickle': pd.read_pickle,
     'xlsx': pd.read_excel,
-    'parquet': pd.read_parquet
+    'parquet': pd.read_parquet,
+    'pickle': pd.read_pickle
 }
 
 
@@ -562,6 +626,31 @@ if uploaded_file is not None:
         option2 = st.sidebar.multiselect('Select forecasting models',
                                          option_dict.get(option))
 
+        # metrics
+        st.sidebar.markdown('## Metrics')
+        metrics = st.sidebar.multiselect('metrics', ts_metrics, default=[
+                                         'mape', 'wmape', 'smape_loss', 'rmse'])
+
+        with st.sidebar.beta_expander('Metrics Formula'):
+            st.latex(
+                """mape=\dfrac{1}{n}\sum{\left|\dfrac{F_{i}-A_{i}}{A_{i}}\\right|}\cdot100""")
+            st.latex(
+                "wmape=\dfrac{\sum{|{F_{i}-A_{i}}|}}{\sum{|A_{i}|}}\cdot100")
+            st.latex(
+                "smape=\dfrac{100}{n}\sum _{i=1}^{n}{\dfrac {|F_{i}-A_{i}|}{(|A_{i}|+|F_{i}|)/2}}")
+            st.latex(
+                "rmse={\sqrt {\dfrac {\sum _{i=1}^{n}({F_i}-{A_i})^{2}}{n}}}")
+            st.latex("me=\dfrac{\sum _{i=1}^{n}{{F_i}-{A_i}}}{n}")
+            st.latex("mae=\dfrac{\sum _{i=1}^{n}{|{F_i}-{A_i}|}}{n}")
+            st.latex(
+                "mpe=\dfrac{1}{n}\sum{\dfrac{F_{i}-A_{i}}{A_{i}}}\cdot100")
+            st.latex("""
+                corr={\dfrac {\sum \limits _{i=1}^{n}(A_{i}-{\\bar {A}})
+                (F_{i}-{\\bar {F}})}{\sqrt {\sum \limits _{i=1}^{n}(A_{i}-{\\bar {A}})^{2}
+                \sum \limits _{i=1}^{n}(F_{i}-{\\bar {F}})^{2}}}}""")
+
+        #metrics = st.sidebar.multiselect('metrics', ts_metrics)
+        st.sidebar.markdown("## Parameters")
         date_col, value_col = st.beta_columns(2)
         date_col = date_col.selectbox('choose date col',  [
                                       i for i in columns if df[i].dtype in ['datetime64[ns]', 'object']] + [None])
@@ -583,16 +672,21 @@ if uploaded_file is not None:
                 # st.write(df.set_index(df[date_col].astype('datetime64[D]'))
                 #          [value_col].resample(freq).sum())
                 df[date_col] = pd.to_datetime(df[date_col])
+
                 st.write(f"""
                 start_date: {start_date}
 
                 end_date: {end_date}
                 """)
 
+                st.latex("wmape=\dfrac{2}{3}")
+                st.latex(
+                    "wmape=\dfrac{\sum{|{A{i}-F{i}}|}}{\sum{|A{i}|}}")
+
                 df = df[df[date_col].between(start_date, end_date)]
                 df = df.set_index(df[date_col])[value_col].resample(freq).sum()
 
-                st.write(df)
+                # st.write(df)
                 # https://stats.stackexchange.com/questions/30569/what-is-the-difference-between-a-stationary-test-and-a-unit-root-test/235916#235916
                 test_1, test_2 = st.beta_columns(2)
                 with test_1:
@@ -641,13 +735,11 @@ if uploaded_file is not None:
                 fh, seasonality = st.beta_columns(2)
                 fh = fh.number_input('select forecast horizon', 1, 20)
                 seasonality = seasonality.number_input(
-                    'select seasonality', 1, 365)
+                    'select seasonality', 4, 365)
+                df = timeseries_forecasting(df, option2, fh, seasonality)
 
-                timeseries_forecasting(df, option2, fh, seasonality)
-                st.sidebar.markdown('## Metrics')
-                metrics = st.sidebar.multiselect('metrics', ts_metrics)
             except:
-                st.error("Select column is not in date format")
+                st.error("Error")
         else:
             st.error("select valid date column")
         # st.multiselect('select date,value columns', columns)
@@ -788,7 +880,7 @@ if uploaded_file is not None:
     if exit:
         st.write("Exiting")
         pass
-
+    gc.collect()
     if pressed:
         st.write(option)
 
@@ -934,17 +1026,30 @@ if uploaded_file is not None:
                 # igraph.drawing.plot(S,'test.png')
             elif option == 'Time Series':
                 # fig, ax = plt.subplots(figsize=(5, 3))
-                st.pyplot(plot_pacf(df))
-                st.pyplot(plot_acf(df))
+                st.pyplot(plot_acf(df['actual']))
+                # st.pyplot(plot_pacf(df['actual']))
+                metric_map = {}
+                for i in df.columns[2:]:
+                    # tmp = {i: itemgetter(*metrics)(forecast_performance(
+                    #     df[i], df['actual']))}
+                    # metric_map = {**metric_map, **tmp}
+                    metric_map[i] = itemgetter(
+                        *metrics)(forecast_performance(df[i], df['actual']))
+
+                st.write(pd.DataFrame(metric_map, index=metrics).style.apply(
+                    highlight_abs_min, axis=1))
+                st.write(get_table_download_link(
+                    pd.DataFrame(metric_map, index=metrics)), unsafe_allow_html=True)
 
             else:
+                st.success("Done")
                 pass
 
         st.write(f"""
-        Time Taken:
+        <p style='color:orange;'> Time Taken: </p>
 
         {datetime.now() - start}
-        """)
+        """, unsafe_allow_html=True)
         # st.balloons()
 
 # help(st.number_input)
@@ -952,4 +1057,4 @@ if uploaded_file is not None:
         # a=np.random.choice(range(10),size=100)
         # np.split(a,[10,30,40])
         # S.vs.attributes
-st.success("Done")
+st.success("Done completed")
